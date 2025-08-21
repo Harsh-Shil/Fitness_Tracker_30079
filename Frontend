@@ -1,0 +1,285 @@
+# frontend.py
+import streamlit as st
+import backend as db
+import pandas as pd
+from datetime import date, timedelta
+import uuid # For generating unique IDs
+
+# --- Global User ID (For a single-user app demo) ---
+# In a real app, this would come from a login system.
+CURRENT_USER_ID = "user_abc" # This user will be managed by the app.
+
+# --- Initialize Database and Insert Sample Data ---
+# This function will create tables and insert sample data if they don't exist
+db.create_tables_and_insert_sample_data()
+
+# --- Streamlit Page Configuration ---
+st.set_page_config(layout="wide", page_title="Personal Fitness Tracker")
+st.title("💪 Personal Fitness Tracker")
+st.markdown("Track your activities, set goals, and connect with friends!")
+
+# --- Fetch Current User Profile ---
+user_profile = db.get_user_profile(CURRENT_USER_ID)
+if user_profile:
+    st.sidebar.header(f"👋 Welcome, {user_profile['name'].split(' ')[0]}!")
+    st.sidebar.write(f"Email: {user_profile['email']}")
+    # Ensure weight is displayed only if it exists
+    if user_profile['weight'] is not None:
+        st.sidebar.write(f"Weight: {user_profile['weight']} kg")
+    else:
+        st.sidebar.write("Weight: Not set")
+else:
+    st.sidebar.error("User profile not found. Please ensure the user_id exists in your database.")
+    st.info("For this demo, a default user 'user_abc' is created on first run. If you deleted it, restart your DB or ensure data insertion.")
+    st.stop() # Stop execution if no user is found to prevent further errors
+
+# --- Main Dashboard Layout ---
+st.header("📊 My Dashboard")
+st.markdown("---")
+
+# Quick Stats Section
+col_qs1, col_qs2, col_qs3, col_qs4 = st.columns(4)
+
+total_workouts, total_minutes = db.get_total_workouts_and_minutes_for_user(CURRENT_USER_ID)
+col_qs1.metric(label="Total Workouts Logged", value=total_workouts)
+col_qs2.metric(label="Total Minutes Exercised", value=f"{total_minutes} min")
+
+# Current Week Metrics for user
+today = date.today()
+start_of_week = today - timedelta(days=today.weekday()) # Monday as start of week
+user_weekly_workouts_df = db.get_workout_history(CURRENT_USER_ID, start_of_week, today)
+weekly_minutes = user_weekly_workouts_df['duration_minutes'].sum() if not user_weekly_workouts_df.empty else 0
+weekly_workouts = user_weekly_workouts_df['workout_id'].nunique() if not user_weekly_workouts_df.empty else 0
+
+col_qs3.metric(label="Workouts This Week", value=weekly_workouts)
+col_qs4.metric(label="Minutes This Week", value=f"{weekly_minutes} min")
+
+st.markdown("---")
+
+# --- Dynamic Layout: Tabs for Tracks, Friends, Goals, Metrics ---
+tab_tracks, tab_friends, tab_goals, tab_metrics = st.tabs(["🏋️‍♂️ Log & View Workouts", "👥 Friends & Leaderboard", "🎯 My Goals", "📈 Progress & Metrics"])
+
+with tab_tracks:
+    st.subheader("Log a New Workout")
+    with st.form("new_workout_form"):
+        workout_date = st.date_input("Workout Date", value=date.today())
+        duration_minutes = st.number_input("Duration (minutes)", min_value=1, value=30, format="%d")
+        notes = st.text_area("Workout Notes (optional)")
+
+        st.markdown("#### Exercises Performed")
+        # Initialize exercises in session state if not present
+        if 'exercises' not in st.session_state:
+            st.session_state.exercises = [{'name': '', 'reps': None, 'sets': None, 'weight': None}]
+
+        # Render current exercises
+        for i, exercise in enumerate(st.session_state.exercises):
+            cols_ex = st.columns([0.4, 0.15, 0.15, 0.15, 0.15])
+            exercise['name'] = cols_ex[0].text_input(f"Exercise Name", value=exercise['name'], key=f"ex_name_{i}")
+            exercise['reps'] = cols_ex[1].number_input(f"Reps", min_value=0, value=exercise['reps'] if exercise['reps'] is not None else 0, key=f"ex_reps_{i}", format="%d")
+            exercise['sets'] = cols_ex[2].number_input(f"Sets", min_value=0, value=exercise['sets'] if exercise['sets'] is not None else 0, key=f"ex_sets_{i}", format="%d")
+            exercise['weight'] = cols_ex[3].number_input(f"Weight (kg)", value=exercise['weight'] if exercise['weight'] is not None else 0.0, key=f"ex_weight_{i}", format="%.2f")
+            
+            if cols_ex[4].button("Remove", key=f"remove_ex_{i}"):
+                st.session_state.exercises.pop(i)
+                st.experimental_rerun() # Rerun to update the list instantly
+
+        if st.form_submit_button("Add Another Exercise"): # Use form_submit_button inside form
+            st.session_state.exercises.append({'name': '', 'reps': None, 'sets': None, 'weight': None})
+            st.experimental_rerun()
+
+        submitted = st.form_submit_button("Log Workout")
+        if submitted:
+            valid_exercises = [ex for ex in st.session_state.exercises if ex['name']]
+            success, message = db.add_workout(CURRENT_USER_ID, workout_date, duration_minutes, notes, valid_exercises)
+            if success:
+                st.success(message)
+                st.session_state.exercises = [{'name': '', 'reps': None, 'sets': None, 'weight': None}] # Reset form
+                # st.experimental_rerun() # Rerunning after successful log might be jarring, better to just show message.
+            else:
+                st.error(message)
+
+    st.subheader("Workout History")
+    workout_history_df = db.get_workout_history(CURRENT_USER_ID)
+    if not workout_history_df.empty:
+        # Group by workout to display
+        workouts_grouped = workout_history_df.groupby(['workout_id', 'workout_date', 'duration_minutes', 'notes'])
+        
+        # Sort groups by workout_date in descending order
+        sorted_groups = sorted(workouts_grouped, key=lambda x: x[0][1], reverse=True)
+
+        for (workout_id, workout_date, duration_minutes, notes), group in sorted_groups:
+            st.markdown(f"**🗓️ {workout_date} - {duration_minutes} minutes**")
+            st.markdown(f"*{notes if notes else 'No notes provided.'}*")
+            for idx, row in group.sort_values('exercise_order').iterrows(): # Ensure exercises are ordered
+                if pd.notna(row['exercise_name']):
+                    details = f"- **{row['exercise_name']}**"
+                    ex_parts = []
+                    if pd.notna(row['sets']) and row['sets'] > 0:
+                        ex_parts.append(f"{int(row['sets'])} sets")
+                    if pd.notna(row['reps']) and row['reps'] > 0:
+                        ex_parts.append(f"{int(row['reps'])} reps")
+                    if pd.notna(row['weight_lifted']) and row['weight_lifted'] > 0:
+                        ex_parts.append(f"{row['weight_lifted']} kg")
+                    
+                    if ex_parts:
+                        details += f" ({', '.join(ex_parts)})"
+                    st.markdown(details)
+            st.markdown("---")
+    else:
+        st.info("No workouts logged yet. Start tracking your fitness!")
+
+
+with tab_friends:
+    st.subheader("My Friends")
+    friends_df = db.get_friends(CURRENT_USER_ID)
+    if not friends_df.empty:
+        st.dataframe(friends_df[['friend_name', 'friend_email']], use_container_width=True)
+    else:
+        st.info("You haven't added any friends yet.")
+
+    st.markdown("---")
+    st.subheader("Add a Friend")
+    with st.form("add_friend_form"):
+        friend_email_input = st.text_input("Friend's Email (must be an existing user in the system)")
+        add_friend_button = st.form_submit_button("Add Friend")
+        if add_friend_button:
+            if friend_email_input:
+                success, message = db.add_friend(CURRENT_USER_ID, friend_email_input)
+                if success:
+                    st.success(message)
+                    st.experimental_rerun()
+                else:
+                    st.error(message)
+            else:
+                st.warning("Please enter a friend's email.")
+    
+    st.markdown("---")
+    st.subheader("Remove a Friend")
+    if not friends_df.empty:
+        # Use friend_id as value, but display friend_name
+        friend_options = {row['friend_id']: row['friend_name'] for idx, row in friends_df.iterrows()}
+        selected_friend_id_to_remove = st.selectbox(
+            "Select friend to remove",
+            options=list(friend_options.keys()),
+            format_func=lambda x: friend_options[x],
+            key="remove_friend_select"
+        )
+        if st.button("Remove Selected Friend", key="remove_friend_button"):
+            success, message = db.remove_friend(CURRENT_USER_ID, selected_friend_id_to_remove)
+            if success:
+                st.success(message)
+                st.experimental_rerun()
+            else:
+                st.error(message)
+    else:
+        st.info("No friends to remove.")
+
+
+    st.markdown("---")
+    st.subheader("Friend Leaderboard (This Week)")
+    leaderboard_df = db.get_leaderboard_data(CURRENT_USER_ID)
+    if not leaderboard_df.empty:
+        # Highlight current user
+        def highlight_user(s):
+            return ['background-color: yellow' if s['name'] == user_profile['name'] else '' for _ in s]
+        
+        st.dataframe(leaderboard_df.style.apply(highlight_user, axis=1), use_container_width=True)
+        st.info(f"Leaderboard is based on total workout minutes for the current week (starting {start_of_week.strftime('%Y-%m-%d')}).")
+    else:
+        st.info("No leaderboard data available for this week. Log some workouts or add friends!")
+
+
+with tab_goals:
+    st.subheader("Set a New Goal")
+    with st.form("new_goal_form"):
+        goal_type = st.selectbox("Goal Type", ['Total Workouts', 'Total Minutes', 'Weight Loss (kg)', 'Specific Lift (kg)'])
+        target_value = st.number_input("Target Value", min_value=0.1, value=10.0, format="%.2f")
+        goal_start_date = st.date_input("Start Date", value=date.today())
+        goal_end_date = st.date_input("End Date", value=date.today() + timedelta(days=30))
+
+        add_goal_button = st.form_submit_button("Set Goal")
+        if add_goal_button:
+            if goal_end_date <= goal_start_date:
+                st.error("End date must be after start date.")
+            else:
+                success, message = db.add_goal(CURRENT_USER_ID, goal_type, target_value, goal_start_date, goal_end_date)
+                if success:
+                    st.success(message)
+                    st.experimental_rerun()
+                else:
+                    st.error(message)
+
+    st.subheader("My Active & Past Goals")
+    goals_df = db.get_user_goals(CURRENT_USER_ID)
+    if not goals_df.empty:
+        st.dataframe(goals_df, use_container_width=True)
+
+        st.markdown("---")
+        st.subheader("Update Goal Progress")
+        
+        # Filter for active goals to make selection easier
+        active_goals_df = goals_df[goals_df['is_achieved'] == False]
+        
+        if not active_goals_df.empty:
+            # Create a dictionary for better display in selectbox
+            goal_options = {row['goal_id']: f"{row['goal_type']} (Target: {row['target_value']})" for idx, row in active_goals_df.iterrows()}
+            selected_goal_id = st.selectbox(
+                "Select Goal to Update",
+                options=list(goal_options.keys()),
+                format_func=lambda x: goal_options[x],
+                key="update_goal_select"
+            )
+            if selected_goal_id:
+                current_goal = active_goals_df[active_goals_df['goal_id'] == selected_goal_id].iloc[0]
+                new_progress_value = st.number_input(f"Current Progress for '{current_goal['goal_type']}'",
+                                                    value=float(current_goal['current_progress']),
+                                                    min_value=0.0, format="%.2f", key="new_progress_input")
+                is_achieved = st.checkbox("Mark as Achieved", value=bool(current_goal['is_achieved']), key="is_achieved_checkbox")
+
+                if st.button("Update Progress", key="update_progress_button"):
+                    success, message = db.update_goal_progress(selected_goal_id, new_progress_value, is_achieved)
+                    if success:
+                        st.success(message)
+                        st.experimental_rerun()
+                    else:
+                        st.error(message)
+        else:
+            st.info("No active goals to update. All goals might be achieved or none set.")
+    else:
+        st.info("No goals set yet. Let's define some!")
+
+with tab_metrics:
+    st.subheader("Workout Progress Over Time")
+    progress_df = db.get_workout_progress_over_time(CURRENT_USER_ID)
+    if not progress_df.empty:
+        # Ensure workout_date is datetime for plotting
+        progress_df['workout_date'] = pd.to_datetime(progress_df['workout_date'])
+        
+        st.line_chart(progress_df.set_index('workout_date')['daily_minutes'])
+        st.write("This chart shows your daily total workout minutes.")
+    else:
+        st.info("Log some workouts to see your progress chart here!")
+
+    st.markdown("---")
+    st.subheader("Weight Tracking")
+    
+    # Ensure current user profile is fetched again or check if it's available
+    current_user_profile_for_weight = db.get_user_profile(CURRENT_USER_ID)
+
+    current_weight_value = current_user_profile_for_weight['weight'] if current_user_profile_for_weight and current_user_profile_for_weight['weight'] is not None else 0.0
+
+    st.write(f"Your last recorded weight: **{current_weight_value} kg**.")
+
+    with st.form("update_weight_form"):
+        new_weight = st.number_input("Update Your Current Weight (kg)", min_value=1.0, value=float(current_weight_value), format="%.2f")
+        submit_weight = st.form_submit_button("Update Weight")
+        if submit_weight:
+            success, message = db.update_user_profile(CURRENT_USER_ID, weight=new_weight)
+            if success:
+                st.success(message)
+                st.experimental_rerun()
+            else:
+                st.error(message)
+
+st.markdown("---")
+st.caption("Application powered by Streamlit and PostgreSQL.")
