@@ -1,0 +1,61 @@
+-- schema.sql
+
+-- Drop tables in dependency order to avoid foreign key constraints issues
+DROP TABLE IF EXISTS Exercises CASCADE;
+DROP TABLE IF EXISTS Goals CASCADE;
+DROP TABLE IF EXISTS Workouts CASCADE;
+DROP TABLE IF EXISTS UserFriends CASCADE;
+DROP TABLE IF EXISTS Users CASCADE;
+
+
+-- Table for User Profile
+CREATE TABLE Users (
+    user_id VARCHAR(255) PRIMARY KEY, -- Primary key for the user
+    name VARCHAR(100) NOT NULL,       -- Ensure this column is consistently named 'name'
+    email VARCHAR(100) UNIQUE NOT NULL,
+    weight DECIMAL(5, 2), -- Current weight in relevant units (e.g., kg or lbs)
+    registration_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Table to manage Friend connections (Many-to-Many relationship between Users)
+CREATE TABLE UserFriends (
+    user_id VARCHAR(255) REFERENCES Users(user_id) ON DELETE CASCADE,
+    friend_id VARCHAR(255) REFERENCES Users(user_id) ON DELETE CASCADE,
+    PRIMARY KEY (user_id, friend_id), -- Composite primary key
+    CHECK (user_id != friend_id) -- A user cannot be friends with themselves
+);
+
+-- Table for Workouts
+CREATE TABLE Workouts (
+    workout_id VARCHAR(255) PRIMARY KEY,
+    user_id VARCHAR(255) NOT NULL REFERENCES Users(user_id) ON DELETE CASCADE,
+    workout_date DATE NOT NULL,
+    duration_minutes INTEGER NOT NULL,
+    notes TEXT, -- Optional notes about the workout
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Table for individual Exercises within a Workout
+CREATE TABLE Exercises (
+    exercise_id VARCHAR(255) PRIMARY KEY,
+    workout_id VARCHAR(255) NOT NULL REFERENCES Workouts(workout_id) ON DELETE CASCADE,
+    exercise_name VARCHAR(100) NOT NULL,
+    reps INTEGER,
+    sets INTEGER,
+    weight_lifted DECIMAL(7, 2), -- Weight lifted per set/exercise
+    exercise_order INTEGER -- To maintain order of exercises within a workout
+);
+
+-- Table for User Goals
+CREATE TABLE Goals (
+    goal_id VARCHAR(255) PRIMARY KEY,
+    user_id VARCHAR(255) NOT NULL REFERENCES Users(user_id) ON DELETE CASCADE,
+    goal_type VARCHAR(50) NOT NULL, -- e.g., 'Total Workouts', 'Total Minutes', 'Weight Loss', 'Specific Lift'
+    target_value DECIMAL(10, 2) NOT NULL,
+    start_date DATE NOT NULL,
+    end_date DATE NOT NULL,
+    current_progress DECIMAL(10, 2) DEFAULT 0.0, -- Current value towards the goal
+    is_achieved BOOLEAN DEFAULT FALSE,
+    achieved_date DATE,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
