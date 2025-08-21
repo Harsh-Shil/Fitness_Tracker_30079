@@ -1,0 +1,466 @@
+# backend.py
+import psycopg2
+from psycopg2 import Error
+from datetime import date, datetime, timedelta
+import pandas as pd
+import os
+import uuid # For generating unique IDs reliably
+
+# Database connection parameters - !!! REMEMBER TO CHANGE THESE FOR YOUR SETUP !!!
+DB_HOST = os.getenv("DB_HOST", "localhost")
+DB_NAME = os.getenv("DB_NAME", "FTA_24199_30079") # <<< DATABASE NAME UPDATED HERE
+DB_USER = os.getenv("DB_USER", "postgres")       # <<< CHANGE THIS TO YOUR DB USER
+DB_PASSWORD = os.getenv("DB_PASSWORD", "Harry#17") # <<< CHANGE THIS TO YOUR DB PASSWORD
+
+def connect_db():
+    """Establishes a connection to the PostgreSQL database."""
+    try:
+        conn = psycopg2.connect(
+            host=DB_HOST,
+            database=DB_NAME,
+            user=DB_USER,
+            password=DB_PASSWORD
+        )
+        return conn
+    except Error as e:
+        print(f"Error connecting to database: {e}")
+        return None
+
+def create_tables_and_insert_sample_data():
+    """
+    Creates necessary tables if they don't exist and inserts sample data.
+    This function should be called once when the app starts.
+    It includes explicit column names in INSERT statements for robustness.
+    """
+    conn = connect_db()
+    if conn is None:
+        print("Database connection failed. Cannot create tables or insert data.")
+        return
+
+    try:
+        cursor = conn.cursor()
+
+        # Create Users table
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS Users (
+            user_id VARCHAR(255) PRIMARY KEY,
+            name VARCHAR(100) NOT NULL, -- Ensure 'name' column exists
+            email VARCHAR(100) UNIQUE NOT NULL,
+            weight DECIMAL(5, 2),
+            registration_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );""")
+        conn.commit()
+        print("Table 'Users' ensured to exist.")
+
+        # Create UserFriends table
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS UserFriends (
+            user_id VARCHAR(255) REFERENCES Users(user_id) ON DELETE CASCADE,
+            friend_id VARCHAR(255) REFERENCES Users(user_id) ON DELETE CASCADE,
+            PRIMARY KEY (user_id, friend_id),
+            CHECK (user_id != friend_id)
+        );""")
+        conn.commit()
+        print("Table 'UserFriends' ensured to exist.")
+
+        # Create Workouts table
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS Workouts (
+            workout_id VARCHAR(255) PRIMARY KEY,
+            user_id VARCHAR(255) NOT NULL REFERENCES Users(user_id) ON DELETE CASCADE,
+            workout_date DATE NOT NULL,
+            duration_minutes INTEGER NOT NULL,
+            notes TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );""")
+        conn.commit()
+        print("Table 'Workouts' ensured to exist.")
+
+        # Create Exercises table
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS Exercises (
+            exercise_id VARCHAR(255) PRIMARY KEY,
+            workout_id VARCHAR(255) NOT NULL REFERENCES Workouts(workout_id) ON DELETE CASCADE,
+            exercise_name VARCHAR(100) NOT NULL,
+            reps INTEGER,
+            sets INTEGER,
+            weight_lifted DECIMAL(7, 2),
+            exercise_order INTEGER
+        );""")
+        conn.commit()
+        print("Table 'Exercises' ensured to exist.")
+
+        # Create Goals table
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS Goals (
+            goal_id VARCHAR(255) PRIMARY KEY,
+            user_id VARCHAR(255) NOT NULL REFERENCES Users(user_id) ON DELETE CASCADE,
+            goal_type VARCHAR(50) NOT NULL,
+            target_value DECIMAL(10, 2) NOT NULL,
+            start_date DATE NOT NULL,
+            end_date DATE NOT NULL,
+            current_progress DECIMAL(10, 2) DEFAULT 0.0,
+            is_achieved BOOLEAN DEFAULT FALSE,
+            achieved_date DATE,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );""")
+        conn.commit()
+        print("Table 'Goals' ensured to exist.")
+
+
+        # --- Insert Sample Data (only if tables are empty) ---
+        cursor.execute("SELECT COUNT(*) FROM Users;")
+        if cursor.fetchone()[0] == 0:
+            print("Inserting sample data...")
+            # Sample User (CURRENT_USER_ID from frontend)
+            user_id = 'user_abc'
+            cursor.execute("INSERT INTO Users (user_id, name, email, weight) VALUES (%s, %s, %s, %s) ON CONFLICT (user_id) DO NOTHING;",
+                           (user_id, 'John Doe', 'john.doe@example.com', 75.5))
+            conn.commit()
+
+            # Sample Friends (ensure 'name' is inserted correctly)
+            friend_id_1 = 'friend_alice'
+            friend_id_2 = 'friend_bob'
+            
+            cursor.execute("INSERT INTO Users (user_id, name, email, weight) VALUES (%s, %s, %s, %s) ON CONFLICT (user_id) DO NOTHING;",
+                           (friend_id_1, 'Alice Smith', 'alice@example.com', 60.0))
+            cursor.execute("INSERT INTO Users (user_id, name, email, weight) VALUES (%s, %s, %s, %s) ON CONFLICT (user_id) DO NOTHING;",
+                           (friend_id_2, 'Bob Johnson', 'bob@example.com', 85.0))
+            conn.commit()
+
+            cursor.execute("INSERT INTO UserFriends (user_id, friend_id) VALUES (%s, %s) ON CONFLICT (user_id, friend_id) DO NOTHING;",
+                           (user_id, friend_id_1))
+            cursor.execute("INSERT INTO UserFriends (user_id, friend_id) VALUES (%s, %s) ON CONFLICT (user_id, friend_id) DO NOTHING;",
+                           (user_id, friend_id_2))
+            conn.commit()
+
+            # Sample Workouts & Exercises for John Doe
+            workout_id_1 = str(uuid.uuid4())
+            workout_id_2 = str(uuid.uuid4())
+            workout_id_3 = str(uuid.uuid4())
+            cursor.execute("INSERT INTO Workouts (workout_id, user_id, workout_date, duration_minutes, notes) VALUES (%s, %s, %s, %s, %s) ON CONFLICT (workout_id) DO NOTHING;",
+                           (workout_id_1, user_id, date(2025, 8, 18), 45, 'Morning cardio'))
+            cursor.execute("INSERT INTO Exercises (exercise_id, workout_id, exercise_name, reps, sets, weight_lifted, exercise_order) VALUES (%s, %s, %s, %s, %s, %s, %s) ON CONFLICT (exercise_id) DO NOTHING;",
+                           (str(uuid.uuid4()), workout_id_1, 'Running', None, None, None, 1))
+            cursor.execute("INSERT INTO Exercises (exercise_id, workout_id, exercise_name, reps, sets, weight_lifted, exercise_order) VALUES (%s, %s, %s, %s, %s, %s, %s) ON CONFLICT (exercise_id) DO NOTHING;",
+                           (str(uuid.uuid4()), workout_id_1, 'Cycling', None, None, None, 2))
+
+            cursor.execute("INSERT INTO Workouts (workout_id, user_id, workout_date, duration_minutes, notes) VALUES (%s, %s, %s, %s, %s) ON CONFLICT (workout_id) DO NOTHING;",
+                           (workout_id_2, user_id, date(2025, 8, 20), 60, 'Leg day'))
+            cursor.execute("INSERT INTO Exercises (exercise_id, workout_id, exercise_name, reps, sets, weight_lifted, exercise_order) VALUES (%s, %s, %s, %s, %s, %s, %s) ON CONFLICT (exercise_id) DO NOTHING;",
+                           (str(uuid.uuid4()), workout_id_2, 'Squats', 10, 3, 60.0, 1))
+            cursor.execute("INSERT INTO Exercises (exercise_id, workout_id, exercise_name, reps, sets, weight_lifted, exercise_order) VALUES (%s, %s, %s, %s, %s, %s, %s) ON CONFLICT (exercise_id) DO NOTHING;",
+                           (str(uuid.uuid4()), workout_id_2, 'Deadlifts', 8, 3, 80.0, 2))
+
+            cursor.execute("INSERT INTO Workouts (workout_id, user_id, workout_date, duration_minutes, notes) VALUES (%s, %s, %s, %s, %s) ON CONFLICT (workout_id) DO NOTHING;",
+                           (workout_id_3, user_id, date(2025, 8, 21), 30, 'Quick abs'))
+            cursor.execute("INSERT INTO Exercises (exercise_id, workout_id, exercise_name, reps, sets, weight_lifted, exercise_order) VALUES (%s, %s, %s, %s, %s, %s, %s) ON CONFLICT (exercise_id) DO NOTHING;",
+                           (str(uuid.uuid4()), workout_id_3, 'Plank', 60, 3, None, 1))
+
+            conn.commit()
+
+            # Sample Goals for John Doe
+            goal_id_1 = str(uuid.uuid4())
+            goal_id_2 = str(uuid.uuid4())
+            cursor.execute("INSERT INTO Goals (goal_id, user_id, goal_type, target_value, start_date, end_date) VALUES (%s, %s, %s, %s, %s, %s) ON CONFLICT (goal_id) DO NOTHING;",
+                           (goal_id_1, user_id, 'Total Workouts', 10.0, date(2025, 8, 1), date(2025, 8, 31)))
+            cursor.execute("INSERT INTO Goals (goal_id, user_id, goal_type, target_value, start_date, end_date) VALUES (%s, %s, %s, %s, %s, %s) ON CONFLICT (goal_id) DO NOTHING;",
+                           (goal_id_2, user_id, 'Weight Loss (kg)', 70.0, date(2025, 8, 1), date(2025, 12, 31)))
+            conn.commit()
+
+            print("Sample data inserted.")
+        else:
+            print("Tables already contain data. Skipping sample data insertion.")
+
+    except Error as e:
+        conn.rollback()
+        print(f"Error during table creation or data insertion: {e}")
+    finally:
+        if conn:
+            cursor.close()
+            conn.close()
+
+# --- CRUD and Analytics Functions ---
+
+# User Profile Functions
+def get_user_profile(user_id):
+    conn = connect_db()
+    if conn is None: return None
+    try:
+        # Explicitly select 'name' column
+        df = pd.read_sql_query("SELECT user_id, name, email, weight, registration_date FROM Users WHERE user_id = %s;", conn, params=(user_id,))
+        return df.iloc[0].to_dict() if not df.empty else None
+    except Error as e:
+        print(f"Error fetching user profile: {e}")
+        return None
+    finally:
+        if conn: conn.close()
+
+def update_user_profile(user_id, name=None, email=None, weight=None):
+    conn = connect_db()
+    if conn is None: return False, "DB not connected."
+    cursor = conn.cursor()
+    try:
+        updates = []
+        params = []
+        if name:
+            updates.append("name = %s") # Ensure 'name' is used here
+            params.append(name)
+        if email:
+            updates.append("email = %s")
+            params.append(email)
+        if weight is not None:
+            updates.append("weight = %s")
+            params.append(weight)
+
+        if not updates: return True, "No updates provided."
+
+        query = f"UPDATE Users SET {', '.join(updates)} WHERE user_id = %s;"
+        params.append(user_id)
+        cursor.execute(query, tuple(params))
+        conn.commit()
+        return True, "Profile updated successfully!"
+    except Error as e:
+        conn.rollback()
+        return False, f"Error updating profile: {e}"
+    finally:
+        if conn: cursor.close(); conn.close()
+
+# Workout Functions
+def add_workout(user_id, workout_date, duration_minutes, notes=None, exercises=None):
+    conn = connect_db()
+    if conn is None: return False, "DB not connected."
+    cursor = conn.cursor()
+    try:
+        workout_id = str(uuid.uuid4()) # Use UUID for workout_id
+        cursor.execute("INSERT INTO Workouts (workout_id, user_id, workout_date, duration_minutes, notes) VALUES (%s, %s, %s, %s, %s);",
+                       (workout_id, user_id, workout_date, duration_minutes, notes))
+
+        if exercises:
+            for i, ex in enumerate(exercises):
+                exercise_id = str(uuid.uuid4()) # Use UUID for exercise_id
+                cursor.execute("INSERT INTO Exercises (exercise_id, workout_id, exercise_name, reps, sets, weight_lifted, exercise_order) VALUES (%s, %s, %s, %s, %s, %s, %s);",
+                               (exercise_id, workout_id, ex['name'], ex.get('reps'), ex.get('sets'), ex.get('weight'), i+1))
+        conn.commit()
+        return True, "Workout logged successfully!"
+    except Error as e:
+        conn.rollback()
+        return False, f"Error logging workout: {e}"
+    finally:
+        if conn: cursor.close(); conn.close()
+
+def get_workout_history(user_id, start_date=None, end_date=None):
+    conn = connect_db()
+    if conn is None: return pd.DataFrame()
+    try:
+        query = """
+            SELECT w.workout_id, w.workout_date, w.duration_minutes, w.notes,
+                   e.exercise_name, e.reps, e.sets, e.weight_lifted
+            FROM Workouts w
+            LEFT JOIN Exercises e ON w.workout_id = e.workout_id
+            WHERE w.user_id = %s
+        """
+        params = [user_id]
+        if start_date:
+            query += " AND w.workout_date >= %s"
+            params.append(start_date)
+        if end_date:
+            query += " AND w.workout_date <= %s"
+            params.append(end_date)
+        query += " ORDER BY w.workout_date DESC, e.exercise_order ASC;"
+        df = pd.read_sql_query(query, conn, params=params)
+        return df
+    except Error as e:
+        print(f"Error fetching workout history: {e}")
+        return pd.DataFrame()
+    finally:
+        if conn: conn.close()
+
+# Goal Functions
+def add_goal(user_id, goal_type, target_value, start_date, end_date):
+    conn = connect_db()
+    if conn is None: return False, "DB not connected."
+    cursor = conn.cursor()
+    try:
+        goal_id = str(uuid.uuid4()) # Use UUID for goal_id
+        cursor.execute("INSERT INTO Goals (goal_id, user_id, goal_type, target_value, start_date, end_date) VALUES (%s, %s, %s, %s, %s, %s);",
+                       (goal_id, user_id, goal_type, target_value, start_date, end_date))
+        conn.commit()
+        return True, "Goal set successfully!"
+    except Error as e:
+        conn.rollback()
+        return False, f"Error setting goal: {e}"
+    finally:
+        if conn: cursor.close(); conn.close()
+
+def get_user_goals(user_id):
+    conn = connect_db()
+    if conn is None: return pd.DataFrame()
+    try:
+        query = "SELECT goal_id, goal_type, target_value, current_progress, start_date, end_date, is_achieved FROM Goals WHERE user_id = %s ORDER BY end_date DESC;"
+        df = pd.read_sql_query(query, conn, params=(user_id,))
+        return df
+    except Error as e:
+        print(f"Error fetching goals: {e}")
+        return pd.DataFrame()
+    finally:
+        if conn: conn.close()
+
+def update_goal_progress(goal_id, current_progress, is_achieved=False):
+    conn = connect_db()
+    if conn is None: return False, "DB not connected."
+    cursor = conn.cursor()
+    try:
+        achieved_date = date.today() if is_achieved else None
+        cursor.execute("UPDATE Goals SET current_progress = %s, is_achieved = %s, achieved_date = %s WHERE goal_id = %s;",
+                       (current_progress, is_achieved, achieved_date, goal_id))
+        conn.commit()
+        return True, "Goal progress updated!"
+    except Error as e:
+        conn.rollback()
+        return False, f"Error updating goal progress: {e}"
+    finally:
+        if conn: cursor.close(); conn.close()
+
+# Friends Functions
+def get_friends(user_id):
+    conn = connect_db()
+    if conn is None: return pd.DataFrame()
+    try:
+        # Explicitly select friend_name which maps to 'name' column in Users table
+        query = """
+            SELECT f.user_id AS friend_id, f.name AS friend_name, f.email AS friend_email
+            FROM Users u
+            JOIN UserFriends uf ON u.user_id = uf.user_id
+            JOIN Users f ON uf.friend_id = f.user_id
+            WHERE u.user_id = %s;
+        """
+        df = pd.read_sql_query(query, conn, params=(user_id,))
+        return df
+    except Error as e:
+        print(f"Error fetching friends: {e}")
+        return pd.DataFrame()
+    finally:
+        if conn: conn.close()
+
+def add_friend(user_id, friend_email):
+    conn = connect_db()
+    if conn is None: return False, "DB not connected."
+    cursor = conn.cursor()
+    try:
+        # Get friend_id from email
+        cursor.execute("SELECT user_id FROM Users WHERE email = %s;", (friend_email,))
+        friend_row = cursor.fetchone()
+        if not friend_row:
+            return False, "Friend user not found with this email."
+        friend_id = friend_row[0]
+
+        if user_id == friend_id:
+            return False, "You cannot add yourself as a friend."
+
+        cursor.execute("INSERT INTO UserFriends (user_id, friend_id) VALUES (%s, %s) ON CONFLICT (user_id, friend_id) DO NOTHING;",
+                       (user_id, friend_id))
+        conn.commit()
+        return True, "Friend added successfully!"
+    except Error as e:
+        conn.rollback()
+        return False, f"Error adding friend: {e}"
+    finally:
+        if conn: cursor.close(); conn.close()
+
+def remove_friend(user_id, friend_id_to_remove):
+    conn = connect_db()
+    if conn is None: return False, "DB not connected."
+    cursor = conn.cursor()
+    try:
+        cursor.execute("DELETE FROM UserFriends WHERE user_id = %s AND friend_id = %s;",
+                       (user_id, friend_id_to_remove))
+        conn.commit()
+        if cursor.rowcount > 0:
+            return True, "Friend removed successfully!"
+        else:
+            return False, "Friend not found or already removed."
+    except Error as e:
+        conn.rollback()
+        return False, f"Error removing friend: {e}"
+    finally:
+        if conn: cursor.close(); conn.close()
+
+# Leaderboard & Metrics
+def get_leaderboard_data(user_id):
+    conn = connect_db()
+    if conn is None: return pd.DataFrame()
+    try:
+        # Get user's friends (including self for comparison)
+        query_friends = """
+            SELECT user_id FROM Users WHERE user_id = %s
+            UNION
+            SELECT friend_id FROM UserFriends WHERE user_id = %s;
+        """
+        friend_ids_df = pd.read_sql_query(query_friends, conn, params=(user_id, user_id))
+        if friend_ids_df.empty:
+            return pd.DataFrame(columns=['name', 'total_workout_minutes', 'total_workouts'])
+
+        friend_ids = tuple(friend_ids_df['user_id'].tolist())
+
+        # Calculate total workout minutes for the current week for all relevant users
+        today = date.today()
+        # Ensure start_of_week correctly identifies Monday
+        start_of_week = today - timedelta(days=today.weekday())
+        
+        query = f"""
+            SELECT u.name, COALESCE(SUM(w.duration_minutes), 0) AS total_workout_minutes,
+                   COUNT(w.workout_id) AS total_workouts
+            FROM Users u
+            LEFT JOIN Workouts w ON u.user_id = w.user_id
+                                AND w.workout_date >= %s AND w.workout_date <= %s
+            WHERE u.user_id IN %s
+            GROUP BY u.name, u.user_id  -- 'u.name' explicitly used here for grouping
+            ORDER BY total_workout_minutes DESC;
+        """
+        df = pd.read_sql_query(query, conn, params=(start_of_week, today, friend_ids))
+        return df
+    except Error as e:
+        print(f"Error fetching leaderboard data: {e}")
+        return pd.DataFrame()
+    finally:
+        if conn: conn.close()
+
+def get_total_workouts_and_minutes_for_user(user_id):
+    conn = connect_db()
+    if conn is None: return 0, 0
+    try:
+        query = """
+            SELECT COUNT(workout_id) AS total_workouts, COALESCE(SUM(duration_minutes), 0) AS total_minutes
+            FROM Workouts
+            WHERE user_id = %s;
+        """
+        cursor = conn.cursor()
+        cursor.execute(query, (user_id,))
+        result = cursor.fetchone()
+        # Ensure that if SUM returns None (no workouts), it defaults to 0
+        return (result[0] if result[0] is not None else 0, result[1] if result[1] is not None else 0)
+    except Error as e:
+        print(f"Error fetching user totals: {e}")
+        return 0, 0
+    finally:
+        if conn: conn.close()
+
+def get_workout_progress_over_time(user_id):
+    conn = connect_db()
+    if conn is None: return pd.DataFrame()
+    try:
+        query = """
+            SELECT workout_date, SUM(duration_minutes) AS daily_minutes
+            FROM Workouts
+            WHERE user_id = %s
+            GROUP BY workout_date
+            ORDER BY workout_date ASC;
+        """
+        df = pd.read_sql_query(query, conn, params=(user_id,))
+        return df
+    except Error as e:
+        print(f"Error fetching workout progress over time: {e}")
+        return pd.DataFrame()
+    finally:
+        if conn: conn.close()
